@@ -10,6 +10,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.support.annotation.NonNull;
 import android.util.Base64;
+import android.util.Log;
 
 import com.RNFetchBlob.Response.RNFetchBlobDefaultResp;
 import com.RNFetchBlob.Response.RNFetchBlobFileResp;
@@ -29,6 +30,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import javax.net.ssl.SSLContext;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -484,30 +486,40 @@ public class RNFetchBlobReq extends BroadcastReceiver implements Runnable {
                     // For XMLHttpRequest, automatic response data storing strategy, when response
                     // data is considered as binary data, write it to file system
                     if(isBlobResp && options.auto) {
-                        String dest = RNFetchBlobFS.getTmpPath(taskId);
-                        InputStream ins = resp.body().byteStream();
-                        FileOutputStream os = new FileOutputStream(new File(dest));
-                        int read;
-                        byte[] buffer = new byte[10240];
-                        while ((read = ins.read(buffer)) != -1) {
-                            os.write(buffer, 0, read);
+                        try{
+                            String dest = RNFetchBlobFS.getTmpPath(taskId);
+                            InputStream ins = resp.body().byteStream();
+                            FileOutputStream os = new FileOutputStream(new File(dest));
+                            int read;
+                            byte[] buffer = new byte[10240];
+                            while ((read = ins.read(buffer)) != -1) {
+                                os.write(buffer, 0, read);
+                            }
+                            ins.close();
+                            os.flush();
+                            os.close();
+                            callback.invoke(null, RNFetchBlobConst.RNFB_RESPONSE_PATH, dest);
+                        }catch(IOException ex) {
+                            Log.e(getClass().getName(), "failed to encode body: ", ex);
+                            callback.invoke("RNFetchBlob failed to encode response data XMLHttpRequest.", null);
                         }
-                        ins.close();
-                        os.flush();
-                        os.close();
-                        callback.invoke(null, RNFetchBlobConst.RNFB_RESPONSE_PATH, dest);
                     }
                     // response data directly pass to JS context as string.
                     else {
                         // #73 Check if the response data contains valid UTF8 string, since BASE64
                         // encoding will somehow break the UTF8 string format, to encode UTF8
                         // string correctly, we should do URL encoding before BASE64.
-                        byte[] b = resp.body().bytes();
-                        CharsetEncoder encoder = Charset.forName("UTF-8").newEncoder();
-                        if(responseFormat == ResponseFormat.BASE64) {
-                            callback.invoke(null, RNFetchBlobConst.RNFB_RESPONSE_BASE64, android.util.Base64.encodeToString(b, Base64.NO_WRAP));
-                            return;
-                        }
+                        try{
+                            ResponseBody body = resp.body();
+                            byte[] b = new byte[0];
+                            if(body != null) {
+                                b = getBytesFromInputStream(body.byteStream());
+                            }
+                            CharsetEncoder encoder = Charset.forName("UTF-8").newEncoder();
+                            if(responseFormat == ResponseFormat.BASE64) {
+                                callback.invoke(null, RNFetchBlobConst.RNFB_RESPONSE_BASE64, android.util.Base64.encodeToString(b, Base64.NO_WRAP));
+                                return;
+                            }
                         try {
                             encoder.encode(ByteBuffer.wrap(b).asCharBuffer());
                             // if the data contains invalid characters the following lines will be
@@ -525,8 +537,12 @@ public class RNFetchBlobReq extends BroadcastReceiver implements Runnable {
                                 callback.invoke(null, RNFetchBlobConst.RNFB_RESPONSE_BASE64, android.util.Base64.encodeToString(b, Base64.NO_WRAP));
                             }
                         }
+                        }catch(IOException ex) {
+                            Log.e(getClass().getName(), "failed to encode body: ", ex);
+                            callback.invoke("RNFetchBlob failed to encode response data to BASE64 string.", null);
+                        }
                     }
-                } catch (IOException e) {
+                } catch (Exception e) {
                     callback.invoke("RNFetchBlob failed to encode response data to BASE64 string.", null);
                 }
                 break;
@@ -553,6 +569,20 @@ public class RNFetchBlobReq extends BroadcastReceiver implements Runnable {
 //        if(!resp.isSuccessful())
         resp.body().close();
         releaseTaskResource();
+    }
+
+    private byte[] getBytesFromInputStream(InputStream inputStream) throws IOException {
+        try {
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                output.write(buffer, 0, bytesRead);
+            }
+            return output.toByteArray();
+        } catch (OutOfMemoryError error) {
+            return null;
+        }
     }
 
     /**
